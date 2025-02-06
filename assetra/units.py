@@ -204,7 +204,8 @@ class StaticUnit(EnergyUnit):
         """
         # time-indexing
         unit_dataset = unit_dataset.sel(time=net_hourly_capacity_matrix.time)
-
+        #unit_dataset = unit_dataset.sel(time=~unit_dataset.indexes["time"].duplicated())        
+        
         # sum across capacity units
         probabilistic_capacity_matrix = unit_dataset["hourly_capacity"].sum(
             dim="energy_unit"
@@ -344,6 +345,7 @@ class StochasticUnit(EnergyUnit):
         """
         # time-indexing
         unit_dataset = unit_dataset.sel(time=net_hourly_capacity_matrix.time)
+        #unit_dataset = unit_dataset.sel(time=~unit_dataset.indexes["time"].duplicated())
 
         chunk_size = 1 + MAX_CHUNK_SIZE // (
             net_hourly_capacity_matrix.sizes["trial"]
