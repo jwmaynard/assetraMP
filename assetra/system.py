@@ -228,4 +228,4 @@ class EnergySystemBuilder:
             for unit in units:
                 builder.add_unit(unit)
 
-        return builder
+        return builder 

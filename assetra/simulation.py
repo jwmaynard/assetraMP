@@ -34,6 +34,7 @@ class ProbabilisticSimulation:
         self._energy_system = None
         self._net_hourly_capacity_matrix = None
         self._hourly_capacity_matrix = None
+        self._unit_performance: dict[str, xr.DataArray] = {}
 
     def copy(self) -> ProbabilisticSimulation:
         """Return a probabilistic simulation object with the same underlying
@@ -81,6 +82,11 @@ class ProbabilisticSimulation:
             )
             raise RuntimeWarning
         return self._net_hourly_capacity_matrix.copy()
+    
+    @property
+    def unit_performance(self) -> dict[str, xr.DataArray]:
+        """Return the per–unit performance data for each unit type."""
+        return self._unit_performance
 
     def get_hourly_capacity_matrix_by_type(
         self, unit_type: type
@@ -155,6 +161,8 @@ class ProbabilisticSimulation:
                     trial=np.arange(self._trial_size), time=time_stamps
                 ),
             )
+        
+        self._unit_performance = {}
 
         # initialize capacity by unit type
         unit_types = NONRESPONSIVE_UNIT_TYPES + RESPONSIVE_UNIT_TYPES
@@ -181,3 +189,20 @@ class ProbabilisticSimulation:
                 self._net_hourly_capacity_matrix += (
                     self._hourly_capacity_matrix.sel(unit_type=unit_type).values
                 )
+ 
+                # For each unit type present in the energy system:
+        for unit_type in unit_types:
+            if unit_type in self._energy_system.unit_datasets:
+                # Get the per–unit performance data:
+                unit_level_data = unit_type.get_probabilistic_capacity_matrix(
+                    self._energy_system.unit_datasets[unit_type],
+                    self._net_hourly_capacity_matrix,
+                    return_unit_level=True
+                )
+                # Save the detailed (per–unit) result (dims: trial, energy_unit, time)
+                self._unit_performance[unit_type.__name__] = unit_level_data
+
+                # Aggregate over the energy_unit dimension:
+                aggregated = unit_level_data.sum(dim="energy_unit")
+                self._hourly_capacity_matrix.loc[unit_type] = aggregated.values
+                self._net_hourly_capacity_matrix += aggregated.values
