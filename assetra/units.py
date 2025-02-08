@@ -182,7 +182,7 @@ class StaticUnit(EnergyUnit):
 
     @staticmethod
     def get_probabilistic_capacity_matrix(
-        unit_dataset: xr.Dataset, net_hourly_capacity_matrix: xr.DataArray
+        unit_dataset: xr.Dataset, net_hourly_capacity_matrix: xr.DataArray, return_unit_level: bool = False
     ) -> xr.DataArray:
         """Return probabilistic hourly capacity matrix for a static unit
         dataset.
@@ -205,7 +205,21 @@ class StaticUnit(EnergyUnit):
         # time-indexing
         unit_dataset = unit_dataset.sel(time=net_hourly_capacity_matrix.time)
         #unit_dataset = unit_dataset.sel(time=~unit_dataset.indexes["time"].duplicated())        
-        
+        trial_coords = net_hourly_capacity_matrix.coords["trial"]
+
+        if return_unit_level:
+            # Original data is (energy_unit, time); add a trial axis:
+            static_per_unit = unit_dataset["hourly_capacity"].expand_dims({"trial": trial_coords})
+            # Ensure the dimensions order is ("trial", "energy_unit", "time")
+            static_per_unit = static_per_unit.transpose("trial", "energy_unit", "time")
+            return static_per_unit
+        else:
+            # Sum over energy_unit, then broadcast to trials
+            aggregated = unit_dataset["hourly_capacity"].sum(dim="energy_unit")
+            # Add a trial dimension by broadcasting:
+            aggregated = xr.zeros_like(net_hourly_capacity_matrix) + aggregated
+            return aggregated
+'''
         # sum across capacity units
         probabilistic_capacity_matrix = unit_dataset["hourly_capacity"].sum(
             dim="energy_unit"
@@ -217,7 +231,7 @@ class StaticUnit(EnergyUnit):
             + probabilistic_capacity_matrix
         )
 
-        return probabilistic_capacity_matrix
+        return probabilistic_capacity_matrix'''
 
 
 @dataclass(frozen=True)
@@ -318,7 +332,7 @@ class StochasticUnit(EnergyUnit):
 
     @staticmethod
     def get_probabilistic_capacity_matrix(
-        unit_dataset: xr.Dataset, net_hourly_capacity_matrix: xr.DataArray
+        unit_dataset: xr.Dataset, net_hourly_capacity_matrix: xr.DataArray, return_unit_level: bool = False
     ) -> xr.DataArray:
         """Return probabilistic hourly capacity matrix for a stochastic unit
         dataset.
@@ -346,8 +360,63 @@ class StochasticUnit(EnergyUnit):
         # time-indexing
         unit_dataset = unit_dataset.sel(time=net_hourly_capacity_matrix.time)
         #unit_dataset = unit_dataset.sel(time=~unit_dataset.indexes["time"].duplicated())
+        trial_size = net_hourly_capacity_matrix.sizes["trial"]
+        time_size = net_hourly_capacity_matrix.sizes["time"]
+        total_units = unit_dataset.sizes["energy_unit"]
 
-        chunk_size = 1 + MAX_CHUNK_SIZE // (
+        chunk_size = 1 + MAX_CHUNK_SIZE // (trial_size * time_size)
+        LOG.info("Using chunk size " + str(chunk_size))
+
+        if return_unit_level:
+            per_unit_results = []
+            for unit_idx in range(0, total_units, chunk_size):
+                unit_idx_end = min(unit_idx + chunk_size, total_units)
+                chunk = unit_dataset.isel(energy_unit=slice(unit_idx, unit_idx_end))
+                num_units_in_chunk = chunk.sizes["energy_unit"]
+ 
+                # Draw random samples of shape (trial, unit, time)
+                rand_samples = np.random.random_sample((trial_size, num_units_in_chunk, time_size))
+                forced_outage = chunk["hourly_forced_outage_rate"].values[np.newaxis, :, :]
+                capacity = chunk["hourly_capacity"].values[np.newaxis, :, :]
+
+                chunk_result = np.where(rand_samples > forced_outage, capacity, 0)
+                chunk_da = xr.DataArray(
+                    chunk_result,
+                    dims=("trial", "energy_unit", "time"),
+                    coords={
+                        "trial": net_hourly_capacity_matrix.trial,
+                        "energy_unit": chunk.energy_unit,
+                        "time": net_hourly_capacity_matrix.time,
+                    }
+                )
+                per_unit_results.append(chunk_da)
+            result = xr.concat(per_unit_results, dim="energy_unit")
+            return result
+        else:
+            aggregated = xr.zeros_like(net_hourly_capacity_matrix)
+            for unit_idx in range(0, total_units, chunk_size):
+                unit_idx_end = min(unit_idx + chunk_size, total_units)
+                chunk = unit_dataset.isel(energy_unit=slice(unit_idx, unit_idx_end))
+                num_units_in_chunk = chunk.sizes["energy_unit"]
+
+                rand_samples = np.random.random_sample((trial_size, num_units_in_chunk, time_size))
+                forced_outage = chunk["hourly_forced_outage_rate"].values[np.newaxis, :, :]
+                capacity = chunk["hourly_capacity"].values[np.newaxis, :, :]
+                chunk_result = np.where(rand_samples > forced_outage, capacity, 0)
+                chunk_sum = chunk_result.sum(axis=1)
+                aggregated += xr.DataArray(
+                    chunk_sum,
+                    dims=("trial", "time"),
+                    coords={
+                        "trial": net_hourly_capacity_matrix.trial,
+                        "time": net_hourly_capacity_matrix.time,
+                    }
+                )
+            return aggregated
+
+
+
+'''        chunk_size = 1 + MAX_CHUNK_SIZE // (
             net_hourly_capacity_matrix.sizes["trial"]
             * net_hourly_capacity_matrix.sizes["time"]
         )
@@ -391,7 +460,7 @@ class StochasticUnit(EnergyUnit):
             # Update the main probabilistic capacity matrix with the results from the chunk
             probabilistic_capacity_matrix += chunk_prob_matrix
 
-        return probabilistic_capacity_matrix
+        return probabilistic_capacity_matrix'''
 
 
 @dataclass(frozen=True)
@@ -594,7 +663,7 @@ class StorageUnit(EnergyUnit):
 
     @staticmethod
     def get_probabilistic_capacity_matrix(
-        unit_dataset: xr.Dataset, net_hourly_capacity_matrix: xr.DataArray
+        unit_dataset: xr.Dataset, net_hourly_capacity_matrix: xr.DataArray, return_unit_level: bool = False
     ) -> xr.DataArray:
         """Return probabilistic hourly capacity matrix for a storage unit
         dataset.
@@ -620,6 +689,49 @@ class StorageUnit(EnergyUnit):
         units = StorageUnit.from_unit_dataset(unit_dataset)
         units = sorted(units, key=lambda unit: unit.storage_duration, reverse=True)
         
+        trial_size = net_hourly_capacity_matrix.sizes["trial"]
+        per_unit_results = []
+
+        # For sequential dispatch, update a copy of the net capacity for each trial
+        # as each storage unit’s contribution is added.
+        net_adj = net_hourly_capacity_matrix.copy()
+
+        for unit in units:
+            # For this unit, collect the capacity per trial.
+            unit_capacity_list = []
+            for trial in range(trial_size):
+                net_trial = net_adj.isel(trial=trial)
+                # Compute this unit's dispatched capacity for the trial.
+                unit_capacity = StorageUnit._get_hourly_capacity(
+                    unit.charge_rate,
+                    unit.discharge_rate,
+                    unit.charge_capacity,
+                    unit.roundtrip_efficiency,
+                    net_trial,
+                    unit.storage_duration,
+                    unit.storage_class,
+                )
+                unit_capacity_list.append(unit_capacity)
+                # Update the net capacity for this trial by adding the dispatched capacity.
+                net_adj[dict(trial=trial)] = net_trial + unit_capacity
+            # Combine trial results for this unit (each is (time,))
+            unit_capacity_da = xr.concat(unit_capacity_list, dim="trial")
+            per_unit_results.append(unit_capacity_da)
+
+        # Stack all storage unit results along a new "energy_unit" dimension.
+        # The result will have dims ("energy_unit", "trial", "time").
+        stacked = xr.concat(per_unit_results, dim="energy_unit")
+        # Reorder dimensions to ("trial", "energy_unit", "time")
+        stacked = stacked.transpose("trial", "energy_unit", "time")
+
+        if return_unit_level:
+            return stacked
+        else:
+            # Sum over the energy_unit dimension to get total storage contribution.
+            aggregated = stacked.sum(dim="energy_unit")
+            return aggregated
+
+'''
         net_adj_hourly_capacity_matrix = net_hourly_capacity_matrix.copy()
         for idx, unit in enumerate(units):
             # print update
@@ -642,7 +754,7 @@ class StorageUnit(EnergyUnit):
                 )
 
         return net_adj_hourly_capacity_matrix - net_hourly_capacity_matrix
-
+'''
 
 class DemandUnit(StaticUnit):
     """Derived energy unit class, providing a more meaningful interface for
