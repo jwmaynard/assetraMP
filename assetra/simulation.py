@@ -199,17 +199,21 @@ class ProbabilisticSimulation:
                     self._net_hourly_capacity_matrix,
                     return_unit_level=True
                 )
-
-                # Get the nameplate capacity and energy capacity for the generator
-                nameplate_capacity = self._energy_system.unit_datasets[unit_type]["Nameplate Capacity (MW)"]
-                nameplate_energy_capacity = self._energy_system.unit_datasets[unit_type]["Nameplate Energy Capacity (MWh)"]
-
-                # Save the detailed (per–unit) result (dims: trial, energy_unit, time)
-                self._unit_performance[unit_type.__name__] = {
+                nameplate_capacity = self._energy_system.unit_datasets[unit_type]["nameplate_capacity"]
+                
+                performance_dict = {
                     "performance": unit_level_data,
-                    "nameplate_capacity_MW": nameplate_capacity,
-                    "nameplate_energy_capacity_MWh": nameplate_energy_capacity
+                    "nameplate_capacity": nameplate_capacity,
+                    "technology": unit_type.__name__,
                 }
+
+                if unit_type.__name__ == "StorageUnit":
+                    performance_dict["nameplate_energy_capacity"] = self._energy_system.unit_datasets[unit_type]["charge_capacity"]
+                    performance_dict["storage_class"] = self._energy_system.unit_datasets[unit_type]["storage_class"]
+
+                self._unit_performance[unit_type.__name__] = performance_dict
+                # Save the detailed (per–unit) result (dims: trial, energy_unit, time)
+                #self._unit_performance[unit_type.__name__] = unit_level_data
 
                 # Aggregate over the energy_unit dimension:
                 aggregated = unit_level_data.sum(dim="energy_unit")
