@@ -772,7 +772,7 @@ class DemandUnit(StaticUnit):
 
     def __init__(self, id: int, hourly_demand: xr.DataArray):
         StaticUnit.__init__(
-            self, id, nameplate_capacity=0, hourly_capacity=-hourly_demand
+            self, id, T=0, hourly_capacity=-hourly_demand
         )
 
 
