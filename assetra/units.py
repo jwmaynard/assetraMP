@@ -358,7 +358,10 @@ class StochasticUnit(EnergyUnit):
                 capacity matrix
         """
         # time-indexing
+    
+
         unit_dataset = unit_dataset.sel(time=net_hourly_capacity_matrix.time)
+        unit_dataset = unit_dataset.sortby("marginal_cost")
         #unit_dataset = unit_dataset.sel(time=~unit_dataset.indexes["time"].duplicated())
         trial_size = net_hourly_capacity_matrix.sizes["trial"]
         time_size = net_hourly_capacity_matrix.sizes["time"]
@@ -772,7 +775,7 @@ class DemandUnit(StaticUnit):
 
     def __init__(self, id: int, hourly_demand: xr.DataArray):
         StaticUnit.__init__(
-            self, id, T=0, hourly_capacity=-hourly_demand
+            self, id, nameplate_capacity=0, hourly_capacity=-hourly_demand
         )
 
 
